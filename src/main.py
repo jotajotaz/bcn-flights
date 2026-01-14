@@ -12,7 +12,7 @@ sys.path.insert(0, str(ROOT_DIR))
 from config.settings import WEEKS_AHEAD
 from src.amadeus_client import AmadeusClient
 from src.formatter import format_telegram_message
-from src.search import FlightSearcher, SearchResult
+from src.search import FlightSearcher, RouteResult
 from src.telegram import TelegramClient
 
 # Configurar logging
@@ -26,33 +26,31 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def save_log(result: SearchResult, log_dir: Path) -> None:
+def save_log(mad_result: RouteResult, ovd_result: RouteResult, log_dir: Path) -> None:
     """Guarda el resultado en un archivo de log."""
     log_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = log_dir / f"search_{timestamp}.log"
 
-    with open(log_file, "w") as f:
+    with open(log_file, "w", encoding="utf-8") as f:
         f.write(f"Búsqueda realizada: {datetime.now().isoformat()}\n")
-        f.write(f"Semana objetivo: {result.week_start}\n")
-        f.write(f"Filtros relajados: {result.relaxed_filters}\n")
-        f.write(f"Opciones encontradas: {len(result.options)}\n")
-        f.write("\n--- TOP OPCIONES ---\n\n")
+        f.write(f"Semana objetivo: {mad_result.week_start}\n\n")
 
-        for i, opt in enumerate(result.options[:10], 1):
-            f.write(f"{i}. {opt.total_price:.0f}€ - {opt}\n")
-            f.write(f"   Ida: {opt.outbound.origin}→{opt.outbound.destination} ")
-            f.write(f"{opt.outbound.departure_time_str} ({opt.outbound.transport_type}) ")
-            f.write(f"{opt.outbound.price:.0f}€\n")
-            f.write(f"   Vuelta: {opt.return_flight.origin}→{opt.return_flight.destination} ")
-            f.write(f"{opt.return_flight.departure_time_str} ({opt.return_flight.transport_type}) ")
-            f.write(f"{opt.return_flight.price:.0f}€\n\n")
-
-        if result.errors:
-            f.write("\n--- ERRORES ---\n\n")
-            for error in result.errors:
-                f.write(f"- {error}\n")
+        for result in [mad_result, ovd_result]:
+            f.write(f"--- {result.origin} ↔ {result.destination} ---\n")
+            f.write(f"Filtros relajados: {result.relaxed_filters}\n")
+            if result.best_combo:
+                f.write(f"Mejor combo: {result.best_combo.total_price:.0f}€\n")
+                f.write(f"  Ida: {result.best_combo.outbound.origin}→{result.best_combo.outbound.destination} ")
+                f.write(f"{result.best_combo.outbound.departure_time_str} {result.best_combo.outbound.price:.0f}€\n")
+                f.write(f"  Vuelta: {result.best_combo.return_flight.origin}→{result.best_combo.return_flight.destination} ")
+                f.write(f"{result.best_combo.return_flight.departure_time_str} {result.best_combo.return_flight.price:.0f}€\n")
+            if result.best_outbound:
+                f.write(f"Mejor ida suelta: {result.best_outbound.price:.0f}€\n")
+            if result.best_return:
+                f.write(f"Mejor vuelta suelta: {result.best_return.price:.0f}€\n")
+            f.write("\n")
 
     logger.info(f"Log guardado en {log_file}")
 
@@ -67,19 +65,20 @@ def main() -> int:
         telegram = TelegramClient()
         searcher = FlightSearcher(client=amadeus)
 
-        # Calcular fecha objetivo (dentro de WEEKS_AHEAD semanas)
+        # Calcular fecha objetivo
         target_date = date.today() + timedelta(weeks=WEEKS_AHEAD)
         logger.info(f"Buscando para semana del {target_date}")
 
-        # Realizar búsqueda
-        result = searcher.search_week(target_date)
+        # Buscar cada ruta
+        mad_result = searcher.search_route("MAD", "BCN", target_date)
+        ovd_result = searcher.search_route("OVD", "BCN", target_date)
 
         # Guardar log
         log_dir = ROOT_DIR / "logs"
-        save_log(result, log_dir)
+        save_log(mad_result, ovd_result, log_dir)
 
         # Formatear y enviar mensaje
-        message = format_telegram_message(result)
+        message = format_telegram_message(mad_result, ovd_result)
         logger.info(f"Mensaje a enviar:\n{message}")
 
         success = telegram.send_message(message)
@@ -94,12 +93,11 @@ def main() -> int:
     except Exception as e:
         logger.exception(f"Error crítico: {e}")
 
-        # Intentar enviar alerta por Telegram
         try:
             telegram = TelegramClient()
             telegram.send_error_alert(str(e))
-        except Exception:
-            pass
+        except Exception as alert_error:
+            logger.warning(f"No se pudo enviar alerta a Telegram: {alert_error}")
 
         return 1
 
