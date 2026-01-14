@@ -1,20 +1,18 @@
-"""Lógica de búsqueda y combinación de vuelos."""
+# src/search.py
+"""Logica de busqueda de vuelos."""
 
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Optional
 
 from config.settings import (
     DAY_PAIRS,
     MAX_ARRIVAL_TIME,
-    MAX_ARRIVAL_TIME_RELAXED,
     MIN_DEPARTURE_TIME,
-    MIN_DEPARTURE_TIME_RELAXED,
-    MIN_PRICE,
-    MAX_PRICE,
-    ROUTE_COMBINATIONS,
-    WEEKS_AHEAD,
+    RELAXED_MARGIN_MINUTES,
+    SINGLE_LEG_THRESHOLD,
+    ROUTES_WITH_SINGLE_LEGS,
 )
 from src.amadeus_client import AmadeusClient, FlightOption
 
@@ -33,178 +31,142 @@ class TripOption:
     def total_price(self) -> float:
         return self.outbound.price + self.return_flight.price
 
-    @property
-    def route_description(self) -> str:
-        return f"{self.outbound.origin}→{self.outbound.destination}→{self.return_flight.destination}"
-
-    def __str__(self) -> str:
-        return (
-            f"{self.outbound_date.strftime('%a %d')} → {self.return_date.strftime('%a %d')}: "
-            f"{self.route_description} = {self.total_price:.0f}€"
-        )
-
 
 @dataclass
-class SearchResult:
-    """Resultado de la búsqueda semanal."""
+class RouteResult:
+    """Resultado de busqueda para una ruta."""
+    origin: str
+    destination: str
+    best_combo: Optional[TripOption]
+    best_outbound: Optional[FlightOption]  # Solo si origin in ROUTES_WITH_SINGLE_LEGS
+    best_return: Optional[FlightOption]    # Solo si origin in ROUTES_WITH_SINGLE_LEGS
     week_start: date
-    options: list[TripOption]
     relaxed_filters: bool = False
-    errors: list[str] = None
 
-    def __post_init__(self):
-        if self.errors is None:
-            self.errors = []
 
-    @property
-    def best_option(self) -> Optional[TripOption]:
-        return self.options[0] if self.options else None
+def _add_minutes_to_time(t: time, minutes: int) -> time:
+    """Anade minutos a un time object."""
+    dt = datetime.combine(date.today(), t)
+    dt += timedelta(minutes=minutes)
+    return dt.time()
 
-    def get_best_by_day_pair(self) -> dict[tuple[int, int], Optional[TripOption]]:
-        """Retorna la mejor opción por cada par de días."""
-        result = {}
-        for day_pair in DAY_PAIRS:
-            matching = [
-                opt for opt in self.options
-                if (opt.outbound_date.weekday(), opt.return_date.weekday()) == day_pair
-            ]
-            result[day_pair] = matching[0] if matching else None
-        return result
+
+def _subtract_minutes_from_time(t: time, minutes: int) -> time:
+    """Resta minutos a un time object."""
+    dt = datetime.combine(date.today(), t)
+    dt -= timedelta(minutes=minutes)
+    return dt.time()
 
 
 class FlightSearcher:
-    """Buscador de vuelos que combina todas las opciones."""
+    """Buscador de vuelos."""
 
     def __init__(self, client: Optional[AmadeusClient] = None):
         self.client = client or AmadeusClient()
 
-    def search_week(self, target_date: Optional[date] = None) -> SearchResult:
+    def search_route(self, origin: str, destination: str, target_date: date) -> RouteResult:
         """
-        Busca todas las opciones para una semana.
+        Busca vuelos para una ruta durante una semana.
 
         Args:
-            target_date: Fecha de referencia (por defecto: hoy + WEEKS_AHEAD semanas)
+            origin: Codigo IATA origen
+            destination: Codigo IATA destino
+            target_date: Fecha de referencia (se usa el lunes de esa semana)
 
         Returns:
-            SearchResult con todas las opciones ordenadas por precio
+            RouteResult con el mejor combo y legs sueltos (si aplica)
         """
-        if target_date is None:
-            target_date = date.today() + timedelta(weeks=WEEKS_AHEAD)
-
-        # Encontrar el lunes de esa semana
         week_start = target_date - timedelta(days=target_date.weekday())
 
-        logger.info(f"Buscando opciones para semana del {week_start}")
-
-        all_options = []
-        errors = []
-        relaxed = False
-
-        # Buscar para cada par de días y cada combinación de rutas
-        for day_pair in DAY_PAIRS:
-            outbound_date = week_start + timedelta(days=day_pair[0])
-            return_date = week_start + timedelta(days=day_pair[1])
-
-            for outbound_route, return_route in ROUTE_COMBINATIONS:
-                try:
-                    options = self._search_trip(
-                        outbound_route.origin,
-                        outbound_route.destination,
-                        return_route.destination,
-                        outbound_date,
-                        return_date,
-                    )
-                    all_options.extend(options)
-                except Exception as e:
-                    error_msg = f"Error buscando {outbound_route.name} {outbound_date}: {e}"
-                    logger.error(error_msg)
-                    errors.append(error_msg)
-
-        # Si no hay opciones, intentar con filtros relajados
-        if not all_options:
-            logger.warning("Sin opciones con filtros estrictos, relajando horarios...")
-            relaxed = True
-            for day_pair in DAY_PAIRS:
-                outbound_date = week_start + timedelta(days=day_pair[0])
-                return_date = week_start + timedelta(days=day_pair[1])
-
-                for outbound_route, return_route in ROUTE_COMBINATIONS:
-                    try:
-                        options = self._search_trip(
-                            outbound_route.origin,
-                            outbound_route.destination,
-                            return_route.destination,
-                            outbound_date,
-                            return_date,
-                            relaxed=True,
-                        )
-                        all_options.extend(options)
-                    except Exception as e:
-                        logger.error(f"Error en búsqueda relajada: {e}")
-
-        # Filtrar precios anómalos y ordenar
-        all_options = [
-            opt for opt in all_options
-            if MIN_PRICE <= opt.total_price <= MAX_PRICE
-        ]
-        all_options.sort(key=lambda x: x.total_price)
-
-        logger.info(f"Encontradas {len(all_options)} opciones totales")
-
-        return SearchResult(
-            week_start=week_start,
-            options=all_options,
-            relaxed_filters=relaxed,
-            errors=errors,
+        # Intentar con filtros estrictos
+        result = self._search_with_filters(
+            origin, destination, week_start,
+            MAX_ARRIVAL_TIME, MIN_DEPARTURE_TIME,
+            relaxed=False,
         )
 
-    def _search_trip(
+        # Si no hay resultados, intentar con filtros relajados
+        if result.best_combo is None:
+            logger.warning(f"Sin resultados para {origin}->{destination}, probando filtros relajados")
+            relaxed_arrival = _add_minutes_to_time(MAX_ARRIVAL_TIME, RELAXED_MARGIN_MINUTES)
+            relaxed_departure = _subtract_minutes_from_time(MIN_DEPARTURE_TIME, RELAXED_MARGIN_MINUTES)
+            result = self._search_with_filters(
+                origin, destination, week_start,
+                relaxed_arrival, relaxed_departure,
+                relaxed=True,
+            )
+
+        return result
+
+    def _search_with_filters(
         self,
         origin: str,
-        via: str,
         destination: str,
-        outbound_date: date,
-        return_date: date,
-        relaxed: bool = False,
-    ) -> list[TripOption]:
-        """Busca opciones para un viaje completo (ida + vuelta)."""
-        max_arrival = MAX_ARRIVAL_TIME_RELAXED if relaxed else MAX_ARRIVAL_TIME
-        min_departure = MIN_DEPARTURE_TIME_RELAXED if relaxed else MIN_DEPARTURE_TIME
+        week_start: date,
+        max_arrival: time,
+        min_departure: time,
+        relaxed: bool,
+    ) -> RouteResult:
+        """Busca vuelos con filtros especificos."""
+        all_combos: list[TripOption] = []
+        all_outbound: list[FlightOption] = []
+        all_return: list[FlightOption] = []
 
-        # Buscar vuelos de ida
-        outbound_options = self.client.search_flights(
-            origin=origin,
-            destination=via,
-            date=outbound_date.isoformat(),
-            max_arrival_time=max_arrival,
-        )
+        for day_out, day_ret in DAY_PAIRS:
+            outbound_date = week_start + timedelta(days=day_out)
+            return_date = week_start + timedelta(days=day_ret)
 
-        if not outbound_options:
-            return []
+            # Buscar vuelos de ida
+            outbound_flights = self.client.search_flights(
+                origin=origin,
+                destination=destination,
+                search_date=outbound_date.isoformat(),
+                max_arrival_time=max_arrival,
+            )
+            all_outbound.extend(outbound_flights)
 
-        # Buscar vuelos de vuelta
-        return_options = self.client.search_flights(
-            origin=via,
-            destination=destination,
-            date=return_date.isoformat(),
-            min_departure_time=min_departure,
-        )
+            # Buscar vuelos de vuelta
+            return_flights = self.client.search_flights(
+                origin=destination,
+                destination=origin,
+                search_date=return_date.isoformat(),
+                min_departure_time=min_departure,
+            )
+            all_return.extend(return_flights)
 
-        if not return_options:
-            return []
-
-        # Combinar: tomar el vuelo más barato de ida con el más barato de vuelta
-        # (podrían combinarse todas, pero aumentaría mucho el número de opciones)
-        trips = []
-
-        # Tomar las 3 mejores idas y las 3 mejores vueltas
-        for outbound in outbound_options[:3]:
-            for return_flight in return_options[:3]:
-                trips.append(TripOption(
-                    outbound=outbound,
-                    return_flight=return_flight,
+            # Combinar mejor ida + mejor vuelta para este par de dias
+            if outbound_flights and return_flights:
+                best_out = min(outbound_flights, key=lambda x: x.price)
+                best_ret = min(return_flights, key=lambda x: x.price)
+                all_combos.append(TripOption(
+                    outbound=best_out,
+                    return_flight=best_ret,
                     outbound_date=outbound_date,
                     return_date=return_date,
                 ))
 
-        return trips
+        # Encontrar mejor combo
+        best_combo = min(all_combos, key=lambda x: x.total_price) if all_combos else None
+
+        # Single legs solo para rutas configuradas
+        best_outbound = None
+        best_return = None
+        if origin in ROUTES_WITH_SINGLE_LEGS and all_outbound:
+            cheapest_out = min(all_outbound, key=lambda x: x.price)
+            if cheapest_out.price < SINGLE_LEG_THRESHOLD:
+                best_outbound = cheapest_out
+
+        if origin in ROUTES_WITH_SINGLE_LEGS and all_return:
+            cheapest_ret = min(all_return, key=lambda x: x.price)
+            if cheapest_ret.price < SINGLE_LEG_THRESHOLD:
+                best_return = cheapest_ret
+
+        return RouteResult(
+            origin=origin,
+            destination=destination,
+            best_combo=best_combo,
+            best_outbound=best_outbound,
+            best_return=best_return,
+            week_start=week_start,
+            relaxed_filters=relaxed,
+        )
