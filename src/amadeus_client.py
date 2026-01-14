@@ -2,7 +2,7 @@
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import date, datetime, time
 from typing import Optional
 
 from amadeus import Client, ResponseError
@@ -18,17 +18,15 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class FlightOption:
-    """Representa una opción de vuelo/tren."""
+    """Representa una opcion de vuelo."""
     origin: str
     destination: str
     departure_time: datetime
     arrival_time: datetime
     price: float
-    currency: str
-    carrier: str
+    carrier_code: str
     carrier_name: str
     flight_number: str
-    is_train: bool = False
 
     @property
     def departure_time_str(self) -> str:
@@ -39,27 +37,23 @@ class FlightOption:
         return self.arrival_time.strftime("%H:%M")
 
     @property
-    def transport_type(self) -> str:
-        return "AVE" if self.is_train else self.carrier_name
+    def flight_date(self) -> date:
+        return self.departure_time.date()
+
+
+# Mapeo de codigos de aerolineas
+CARRIER_NAMES = {
+    "IB": "Iberia",
+    "VY": "Vueling",
+    "UX": "Air Europa",
+    "I2": "Iberia Express",
+    "FR": "Ryanair",
+    "6Y": "SmartLynx",
+}
 
 
 class AmadeusClient:
-    """Cliente para buscar vuelos y trenes en Amadeus."""
-
-    # Códigos de aerolíneas/trenes comunes
-    CARRIER_NAMES = {
-        "IB": "Iberia",
-        "VY": "Vueling",
-        "FR": "Ryanair",
-        "UX": "Air Europa",
-        "6Y": "SmartLynx",
-        "I2": "Iberia Express",
-        "RENFE": "AVE",
-        "2C": "SNCF",
-    }
-
-    # Códigos que indican tren
-    TRAIN_CARRIERS = {"RENFE", "2C", "9F"}
+    """Cliente para buscar vuelos en Amadeus."""
 
     def __init__(self):
         if not AMADEUS_API_KEY or not AMADEUS_API_SECRET:
@@ -74,32 +68,22 @@ class AmadeusClient:
         self,
         origin: str,
         destination: str,
-        date: str,
+        search_date: str,
         max_arrival_time: Optional[time] = None,
         min_departure_time: Optional[time] = None,
     ) -> list[FlightOption]:
         """
-        Busca vuelos/trenes para una ruta y fecha.
-
-        Args:
-            origin: Código IATA del aeropuerto de origen
-            destination: Código IATA del aeropuerto de destino
-            date: Fecha en formato YYYY-MM-DD
-            max_arrival_time: Hora máxima de llegada (para vuelos de ida)
-            min_departure_time: Hora mínima de salida (para vuelos de vuelta)
-
-        Returns:
-            Lista de opciones de vuelo ordenadas por precio
+        Busca vuelos para una ruta y fecha.
         """
         try:
-            logger.info(f"Buscando {origin}→{destination} para {date}")
+            logger.info(f"Buscando {origin}->{destination} para {search_date}")
 
             response = self.client.shopping.flight_offers_search.get(
                 originLocationCode=origin,
                 destinationLocationCode=destination,
-                departureDate=date,
+                departureDate=search_date,
                 adults=1,
-                nonStop=True,  # Solo vuelos directos
+                nonStop="true",  # String, not boolean - this is the fix!
                 currencyCode="EUR",
                 max=MAX_RESULTS_PER_SEARCH,
             )
@@ -114,10 +98,8 @@ class AmadeusClient:
                     logger.warning(f"Error parseando oferta: {e}")
                     continue
 
-            # Ordenar por precio
             options.sort(key=lambda x: x.price)
-
-            logger.info(f"Encontradas {len(options)} opciones para {origin}→{destination}")
+            logger.info(f"Encontradas {len(options)} opciones para {origin}->{destination}")
             return options
 
         except ResponseError as e:
@@ -131,23 +113,16 @@ class AmadeusClient:
         """Parsea una oferta de Amadeus a FlightOption."""
         try:
             price = float(offer["price"]["total"])
-            currency = offer["price"]["currency"]
-
-            # Tomar el primer segmento (vuelo directo)
             itinerary = offer["itineraries"][0]
             segment = itinerary["segments"][0]
 
-            carrier = segment["carrierCode"]
+            carrier_code = segment["carrierCode"]
             flight_number = segment.get("number", "")
-
             departure = datetime.fromisoformat(segment["departure"]["at"])
             arrival = datetime.fromisoformat(segment["arrival"]["at"])
-
             origin = segment["departure"]["iataCode"]
             destination = segment["arrival"]["iataCode"]
-
-            is_train = carrier in self.TRAIN_CARRIERS
-            carrier_name = self.CARRIER_NAMES.get(carrier, carrier)
+            carrier_name = CARRIER_NAMES.get(carrier_code, carrier_code)
 
             return FlightOption(
                 origin=origin,
@@ -155,11 +130,9 @@ class AmadeusClient:
                 departure_time=departure,
                 arrival_time=arrival,
                 price=price,
-                currency=currency,
-                carrier=carrier,
+                carrier_code=carrier_code,
                 carrier_name=carrier_name,
                 flight_number=flight_number,
-                is_train=is_train,
             )
         except (KeyError, IndexError, ValueError) as e:
             logger.warning(f"Error parseando oferta: {e}")
@@ -171,7 +144,7 @@ class AmadeusClient:
         max_arrival_time: Optional[time],
         min_departure_time: Optional[time],
     ) -> bool:
-        """Verifica si la opción cumple los filtros de horario."""
+        """Verifica si la opcion cumple los filtros de horario."""
         if max_arrival_time and option.arrival_time.time() > max_arrival_time:
             return False
         if min_departure_time and option.departure_time.time() < min_departure_time:
