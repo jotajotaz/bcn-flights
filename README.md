@@ -1,36 +1,65 @@
 # Buscador de vuelos Barcelona
 
-Herramienta automatizada que busca las mejores opciones de vuelo/tren para ir a Barcelona 2 días consecutivos, optimizando por precio.
+Herramienta automatizada que busca las mejores opciones de vuelo para ir a Barcelona 2 días consecutivos, optimizando por precio.
 
 ## Qué hace
 
 Cada domingo a las 10:00 (hora España):
 
-1. Busca vuelos y AVE para la semana de dentro de 2 semanas
+1. Busca vuelos para la semana de dentro de 2 semanas
 2. Compara todas las combinaciones de días (L-M, M-X, X-J, J-V)
-3. Compara rutas desde Madrid y Asturias
-4. Te envía por Telegram las 3 mejores opciones
+3. Compara rutas desde Madrid (MAD) y Oviedo (OVD)
+4. Te envía por Telegram las mejores opciones con enlaces para reservar
+
+## Fuentes de datos
+
+| Transporte | Fuente | Notas |
+|------------|--------|-------|
+| Vuelos | Amadeus API (gratis) | Iberia, Vueling, Air Europa, etc. |
+| Trenes | No disponible | Amadeus Rail requiere plan Enterprise (de pago) |
+
+Para trenes (AVE, iryo, OUIGO, Avlo), el mensaje incluye un enlace a Trainline donde el usuario puede comparar manualmente.
 
 ## Ejemplo de mensaje
 
 ```
 ✈️ VUELOS BCN - Semana del 27 ene
 
-🥇 MEJOR OPCIÓN: 87€
+🛫 MADRID ↔ BARCELONA
+   Mejor combo: 122€
    Mar 28 → Mié 29
-   OVD→BCN 07:45 (Vueling) 43€
-   BCN→MAD 18:30 (AVE) 44€
+   MAD→BCN 07:30 (Air Europa) 50€
+   BCN→MAD 19:10 (Vueling) 72€
+   🔗 skyscanner.es/...
 
-🥈 Segunda: 94€
+   📤 Ida suelta: 42€ Mar 28 07:30 (Air Europa)
+   🔗 skyscanner.es/...
+
+🛫 OVIEDO ↔ BARCELONA
+   Mejor combo: 156€
    Lun 27 → Mar 28
-   MAD→BCN 08:15 (AVE) 52€
-   BCN→MAD 19:00 (AVE) 42€
+   OVD→BCN 08:15 (Vueling) 78€
+   BCN→OVD 18:45 (Vueling) 78€
+   🔗 skyscanner.es/...
 
-📊 Resumen por días:
-   L-M: desde 94€ | M-X: desde 87€ | X-J: desde 103€ | J-V: desde 112€
-
-💡 Mejor día: Martes-Miércoles
+🚄 Compara trenes (iryo/OUIGO/AVE):
+   trainline.com/train-times/madrid-to-barcelona
 ```
+
+### Lógica del mensaje
+
+- **Mejor combo**: La combinación ida+vuelta más barata de la semana para cada ruta
+- **Ida/vuelta suelta**: Solo se muestra si el precio es < umbral (default: 45€), útil para combinar con tren
+- **Enlaces**: Skyscanner para vuelos, Trainline para trenes
+
+## Parámetros configurables
+
+| Parámetro | Default | Descripción |
+|-----------|---------|-------------|
+| `MAX_ARRIVAL_TIME` | 10:00 | Hora máxima de llegada (vuelos de ida) |
+| `MIN_DEPARTURE_TIME` | 17:00 | Hora mínima de salida (vuelos de vuelta) |
+| `SINGLE_LEG_THRESHOLD` | 45€ | Solo mostrar vuelo suelto si cuesta menos que esto |
+| `WEEKS_AHEAD` | 2 | Semanas de anticipación para buscar |
 
 ## Configuración
 
@@ -96,15 +125,6 @@ cp .env.example .env
 python src/main.py
 ```
 
-## Personalización
-
-Edita `config/settings.py` para cambiar:
-
-- **Rutas**: Añadir/quitar aeropuertos
-- **Días**: Cambiar pares de días a buscar
-- **Horarios**: Ajustar hora máxima de llegada / mínima de salida
-- **Anticipación**: Cambiar `WEEKS_AHEAD` para buscar más/menos semanas adelante
-
 ## Estructura del proyecto
 
 ```
@@ -125,6 +145,18 @@ bcn-flights/
 
 ## Costes
 
-- **Amadeus API**: Gratis (500 llamadas/mes, usamos ~300)
+- **Amadeus API**: Gratis (500 llamadas/mes, usamos ~50)
 - **GitHub Actions**: Gratis para repos públicos/privados
 - **Total**: 0€
+
+## Limitaciones conocidas
+
+- **Trenes no incluidos**: Amadeus Self-Service no incluye trenes españoles. Para comparar con AVE/iryo/OUIGO, usar el enlace a Trainline.
+- **Precios pueden variar**: Los precios de Amadeus son orientativos. El enlace a Skyscanner puede mostrar precios ligeramente diferentes.
+- **Solo vuelos directos**: No se buscan vuelos con escala.
+
+## Casos de uso futuros (v2)
+
+- [ ] Viajes mixtos: MAD→BCN→OVD o OVD→BCN→MAD
+- [ ] Interactividad: Bot de Telegram que responda a comandos
+- [ ] Integración de trenes si se encuentra API gratuita
