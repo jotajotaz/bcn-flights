@@ -60,9 +60,8 @@ def main() -> int:
     logger.info("Iniciando búsqueda de vuelos BCN")
 
     try:
-        # Inicializar clientes
+        # Inicializar cliente de búsqueda
         amadeus = AmadeusClient()
-        telegram = TelegramClient()
         searcher = FlightSearcher(client=amadeus)
 
         # Calcular fecha objetivo
@@ -77,11 +76,18 @@ def main() -> int:
         log_dir = ROOT_DIR / "logs"
         save_log(mad_result, ovd_result, log_dir)
 
-        # Formatear y enviar mensaje
+        # Formatear mensaje
         message = format_telegram_message(mad_result, ovd_result)
         logger.info(f"Mensaje a enviar:\n{message}")
 
-        success = telegram.send_message(message)
+        # Enviar por Telegram
+        try:
+            telegram = TelegramClient()
+            success = telegram.send_message(message)
+        except ValueError as e:
+            logger.warning(f"Telegram no configurado: {e}")
+            logger.info("El mensaje se ha generado pero no se ha enviado")
+            return 0
 
         if success:
             logger.info("Proceso completado correctamente")

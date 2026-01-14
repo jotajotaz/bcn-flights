@@ -2,6 +2,9 @@
 
 import os
 from datetime import time
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 # Filtros de horario (parametrizables)
