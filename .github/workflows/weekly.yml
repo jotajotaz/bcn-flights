@@ -1,0 +1,52 @@
+name: Búsqueda semanal de vuelos
+
+on:
+  schedule:
+    # Cada domingo a las 10:00 hora de España (09:00 UTC en invierno, 08:00 UTC en verano)
+    - cron: '0 9 * * 0'
+
+  # Permite ejecutar manualmente desde la UI de GitHub
+  workflow_dispatch:
+
+jobs:
+  search-flights:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run flight search
+        env:
+          AMADEUS_API_KEY: ${{ secrets.AMADEUS_API_KEY }}
+          AMADEUS_API_SECRET: ${{ secrets.AMADEUS_API_SECRET }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python src/main.py
+
+      - name: Upload logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: search-logs
+          path: logs/
+          retention-days: 30
+
+      - name: Commit logs to repo
+        if: always()
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add logs/ || true
+          git diff --staged --quiet || git commit -m "Add search logs $(date +%Y-%m-%d)"
+          git push || true
