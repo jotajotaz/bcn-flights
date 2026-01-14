@@ -27,7 +27,7 @@ El código actual incluye lógica para trenes que no funciona porque Amadeus Sel
 | `MAX_ARRIVAL_TIME` | 10:00 | Hora máxima llegada (filtro estricto) |
 | `MIN_DEPARTURE_TIME` | 17:00 | Hora mínima salida (filtro estricto) |
 | `RELAXED_MARGIN_MINUTES` | 60 | Margen fijo para filtros relajados |
-| `SINGLE_LEG_THRESHOLD` | 45€ | Mostrar leg suelto si precio < umbral |
+| `SINGLE_LEG_THRESHOLD` | 45€ | Mostrar leg suelto si precio < umbral (parametrizable) |
 | `WEEKS_AHEAD` | 2 | Semanas de anticipación |
 
 Los filtros relajados se aplican automáticamente si no hay resultados con filtros estrictos:
